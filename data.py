@@ -1,6 +1,9 @@
+import json
+
 import numpy as np
 from torch.utils.data import Dataset
 import torch
+import joblib
 
 
 class MyDataset(Dataset):
@@ -16,42 +19,28 @@ class MyDataset(Dataset):
         return self.x[i], self.y[i], self.z[i]
 
 
+def load_data(args):
+    x_train, aux_train, label_train = joblib.load(f'data/{args.dataset}/train.pkl')
+    x_val, aux_val, label_val = joblib.load(f'data/{args.dataset}/val.pkl')
+    x_test, aux_test, label_test = joblib.load(f'data/{args.dataset}/test.pkl')
+
+    train_dataset = MyDataset(x_train, aux_train, label_train)
+    val_dataset = MyDataset(x_val, aux_val, label_val)
+    test_dataset = MyDataset(x_test, aux_test, label_test)
+
+    scales_all = np.load(f'data/{args.dataset}/scales.npy')
+
+    with open(f'data/{args.dataset}/info.json', 'r') as f:
+        info = json.loads(f.read())
+
+    return train_dataset, val_dataset, test_dataset, scales_all, info
+
+
 def times_to_lags(x, p=None):
     lags = x[:, 1:] - x[:, :-1]
     if p is not None:
         lags = np.c_[lags, x[:, 0] - x[:, -1] + p]
     return lags
-
-
-def preprocess(X_raw, periods, use_error=False):
-    N, L, F = X_raw.shape
-    out_dim = 3 if use_error else 2
-    X = np.zeros((N, L, out_dim))
-    # TODO Check later why we don't use times_to_lags
-    # X[:, :, 0] = times_to_lags(X_raw[:, :, 0], periods) / periods[:, None]
-    X[:, :, 0] = X_raw[:, :, 0]
-    X[:, :, 1:out_dim] = X_raw[:, :, 1:out_dim]
-    means = np.atleast_2d(np.nanmean(X_raw[:, :, 1], axis=1)).T
-    scales = np.atleast_2d(np.nanstd(X_raw[:, :, 1], axis=1)).T
-    X[:, :, 1] -= means
-    X[:, :, 1] /= scales
-    return X, means, scales
-
-
-def train_test_split(y, train_size=0.33, random_state=0):
-    if random_state != -1:
-        np.random.seed(random_state)
-    labels = np.copy(y)
-    np.random.shuffle(labels)
-    y_unique = np.unique(y)
-    indexes = np.arange(len(y))
-    x_split = [np.array(indexes[y == label]) for label in y_unique]
-    for i in range(len(y_unique)):
-        if random_state != -1:
-            np.random.shuffle(x_split[i])
-    trains = [x for el in x_split for x in el[:max(int(train_size * len(el) + 0.5), 1)]]
-    tests = [x for el in x_split for x in el[max(int(train_size * len(el) + 0.5), 1):]]
-    return trains, tests
 
 
 # allow random cyclic permutation on the fly
