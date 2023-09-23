@@ -1,17 +1,69 @@
-import os
-import shutil
+from models.iresnet import IResNet
+from models.itcn import ITCN
+from models.rnn import RNN
+
+
+def get_model(n_inputs, n_classes, args, dtype):
+
+    if args.network in ['itcn', 'iresnet']:
+        padding = 'cyclic'
+    else:
+        padding = 'zero'
+
+    if args.network in ['itcn', 'tcn']:
+        model = ITCN(
+            num_inputs=n_inputs,
+            num_class=n_classes,
+            depth=args.depth,
+            hidden_conv=args.hidden,
+            hidden_classifier=args.hidden_classifier,
+            dropout=args.dropout,
+            kernel_size=args.kernel,
+            dropout_classifier=args.dropout_classifier,
+            aux=3,
+            padding=padding
+        ).type(dtype)
+
+    elif args.network in ['iresnet', 'resnet']:
+        model = IResNet(
+            n_inputs,
+            n_classes,
+            depth=args.depth,
+            nlayer=args.n_layer,
+            kernel_size=args.kernel,
+            hidden_conv=args.hidden,
+            max_hidden=args.max_hidden,
+            padding=padding,
+            min_length=args.min_maxpool,
+            aux=3,
+            dropout_classifier=args.dropout_classifier,
+            hidden=args.hidden_classifier
+        ).type(dtype)
+
+    elif args.network in ['gru', 'lstm']:
+        model = RNN(
+            num_inputs=n_inputs,
+            hidden_rnn=args.hidden,
+            num_layers=args.depth,
+            num_class=n_classes,
+            hidden=args.hidden_classifier,
+            rnn=args.network.upper(),
+            dropout=args.dropout,
+            aux=3
+        ).type(dtype)
+
+    else:
+        raise NotImplementedError(f'{args.network} is not implemented')
+
+    return model
 
 
 def create_save_name(args):
     # Create a base format for the filename
-    base_format = "{filename}-{network}-K{kernel}-D{depth}-H{hidden}-L{L}-V{varlen_train}-{input}-LR{lr}-CLIP{clip}-" \
-                  "DROP{dropout}-TP{two_phase}"
+    base_format = "{dataset}-{network}-K{kernel}-D{depth}-H{hidden}-LR{lr}-CLIP{clip}-DROP{dropout}"
 
     # Create a dictionary of arguments
     args_dict = vars(args).copy()
-    args_dict["filename"] = args.filename[:-4]
-    args_dict["varlen_train"] = int(args.varlen_train)
-    args_dict["two_phase"] = int(args.two_phase)
 
     # Update the dictionary and format string based on the network type
     if args.network in ['resnet', 'iresnet']:
@@ -22,24 +74,3 @@ def create_save_name(args):
     save_name = base_format.format(**args_dict)
 
     return save_name
-
-
-def create_device(path, ngpu=1, njob=1):
-    shutil.rmtree(path, ignore_errors=True)
-    os.mkdir(path)
-
-    for i in range(ngpu):
-        for j in range(njob):
-            with open(path + '/%d_%d' % (i, j), 'a'):
-                os.utime(path + '/%d_%d' % (i, j), None)
-
-
-def get_device(path):
-    device = os.listdir(path)[0]
-    os.remove(path + '/' + device)
-    return device
-
-
-def return_device(path, device):
-    with open(path + '/' + device, 'a'):
-        os.utime(path + '/' + device, None)
