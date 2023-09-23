@@ -8,18 +8,19 @@ import wandb
 from data import permute
 from torch import from_numpy
 
+# TODO move all types to device
 # Define types depending on whether CUDA is available
 dtype = torch.cuda.FloatTensor if torch.cuda.is_available() else torch.FloatTensor
 dint = torch.cuda.LongTensor if torch.cuda.is_available() else torch.LongTensor
 
 
-def train_epoch(model, train_loader, optimizer, loss_fn, clip, scales_all, use_tqdm, perm, tqdm):
+def train_epoch(model, train_loader, optimizer, loss_fn, clip, scales_all, perm):
     model.train()
     train_loss = []
     predictions = []
     ground_truths = []
 
-    for x, aux, y in tqdm(train_loader, disable=not use_tqdm):
+    for x, aux, y in train_loader:
         if scales_all is not None:
             x, aux = preprocess_data(x, aux, scales_all)
         if perm:
@@ -50,13 +51,13 @@ def train_step(model, x, aux, y, optimizer, loss_fn, clip):
     return loss, prediction
 
 
-def validate_epoch(model, val_loader, loss_fn, scales_all, use_tqdm, perm, tqdm):
+def validate_epoch(model, val_loader, loss_fn, scales_all, perm):
     model.eval()
     val_loss = []
     predictions = []
     ground_truths = []
 
-    for x, aux, y in tqdm(val_loader, disable=not use_tqdm):
+    for x, aux, y in val_loader:
         if scales_all is not None:
             x, aux = preprocess_data(x, aux, scales_all)
         if perm:
@@ -86,6 +87,7 @@ def times_to_lags(x):
 
 # preprocess into (dt, f) representation.
 # for variable length training only
+# TODO Check why we need this function
 def preprocess(X_raw):
     N, F, L = X_raw.shape
     X = torch.zeros((N, 2, L-1))
@@ -98,6 +100,7 @@ def preprocess(X_raw):
     return X, means, scales
 
 
+# TODO Check why we need this function
 def preprocess_data(x, aux, scales_all):
     mean_x, std_x, aux_mean, aux_std = scales_all
     mean_x = mean_x[:-1]
@@ -130,6 +133,7 @@ def load_previous_metrics(filename, retrain):
     return train_accuracy, val_accuracy, train_losses, val_losses
 
 
+# TODO Move this to main.py
 def get_lr_scheduler(optimizer, decay_type, patience, threshold):
     if decay_type == 'plateau':
         return ReduceLROnPlateau(optimizer, factor=0.1, patience=patience,
@@ -138,29 +142,26 @@ def get_lr_scheduler(optimizer, decay_type, patience, threshold):
         return ExponentialLR(optimizer, 0.85)
 
 
-def log_metrics(log, train_loss, val_loss, train_accuracy, accuracy):
-    if log:
-        wandb.log({
-            "Train Loss": train_loss,
-            "Val Loss": val_loss,
-            "Train Acc": train_accuracy[-1] * 100,
-            "Val Acc": accuracy * 100
-        })
+def log_metrics(train_loss, val_loss, train_accuracy, accuracy):
+    wandb.log({
+        "Train Loss": train_loss,
+        "Val Loss": val_loss,
+        "Train Acc": train_accuracy[-1] * 100,
+        "Val Acc": accuracy * 100
+    })
 
 
-def save_model(model, save, filename, epoch, val_loss=None, accuracy=None):
-    if save:
-        torch.save(model.state_dict(), filename+'.pth')
-        if val_loss is not None:
-            print(f'Saved: epoch:{epoch}: val_loss = {val_loss:.4f}')
-        elif accuracy is not None:
-            print(f'Saved: epoch:{epoch}: accuracy = {accuracy*100:.2f}')
+def save_model(model, filename, epoch, val_loss=None, accuracy=None):
+    torch.save(model.state_dict(), filename+'.pth')
+    if val_loss is not None:
+        print(f'Saved: epoch:{epoch}: val_loss = {val_loss:.4f}')
+    elif accuracy is not None:
+        print(f'Saved: epoch:{epoch}: accuracy = {accuracy*100:.2f}')
 
 
-def train(model, optimizer, train_loader, val_loader, test_loader, n_epoch, eval_after=1e5, patience=10, min_lr=0.00001,
-          filename='model', save=False, monitor='accuracy', print_every=-1, early_stopping_limit=1e5,
-          threshold=0.1, use_tqdm=False, jupyter=False, scales_all=None, clip=-1, retrain=False, decay_type='plateau',
-          log=False, perm=True):
+def train(model, optimizer, train_loader, val_loader, n_epoch, patience=10, filename='model', save=False,
+          monitor='accuracy', print_every=-1, early_stopping_limit=1e5, threshold=0.1, use_tqdm=False, jupyter=False,
+          clip=-1, retrain=False, decay_type='plateau', perm=True):
 
     tqdm = tqdm_notebook if jupyter else tqdm_
     # TODO create additional vars mean, std, etc instead of scales_all
@@ -174,9 +175,8 @@ def train(model, optimizer, train_loader, val_loader, test_loader, n_epoch, eval
 
     for epoch in tqdm(range(n_epoch), disable=not use_tqdm):
         train_loss, train_predictions, train_ground_truths = train_epoch(model, train_loader, optimizer, loss_fn, clip,
-                                                                         scales_all, use_tqdm, perm, tqdm)
-        val_loss, val_predictions, val_ground_truths = validate_epoch(model, val_loader, loss_fn, scales_all, use_tqdm,
-                                                                      perm, tqdm)
+                                                                         scales_all, perm)
+        val_loss, val_predictions, val_ground_truths = validate_epoch(model, val_loader, loss_fn, scales_all, perm)
 
         train_losses.append(train_loss)
         val_losses.append(val_loss)
@@ -185,16 +185,16 @@ def train(model, optimizer, train_loader, val_loader, test_loader, n_epoch, eval
         val_accuracy.append((val_predictions == val_ground_truths).mean())
 
         lr_scheduler.step(train_loss if decay_type == 'plateau' else None)
-        log_metrics(log, train_loss, val_loss, train_accuracy, val_accuracy[-1])
+        log_metrics(train_loss, val_loss, train_accuracy, val_accuracy[-1])
 
         if print_every != -1 and epoch % print_every == 0:
             print(f'epoch:{epoch}: train_loss = {train_loss:.4f}, val_loss = {val_loss:.4f},'
                   f'accuracy = {val_accuracy[-1] * 100:.2f}')
 
-        if monitor == 'val_loss' and val_loss <= min(train_losses):
-            save_model(model, save, filename, epoch, val_loss=val_loss)
-        elif monitor == 'accuracy' and val_accuracy[-1] >= max(val_accuracy):
-            save_model(model, save, filename, epoch, accuracy=val_accuracy[-1])
+        if monitor == 'val_loss' and val_loss <= min(train_losses) and save:
+            save_model(model, filename, epoch, val_loss=val_loss)
+        elif monitor == 'accuracy' and val_accuracy[-1] >= max(val_accuracy) and save:
+            save_model(model, filename, epoch, accuracy=val_accuracy[-1])
 
         if 0 < early_stopping_limit < epoch - np.argmax(val_accuracy):
             print(f'Metric did not improve for {early_stopping_limit} rounds')
@@ -202,3 +202,30 @@ def train(model, optimizer, train_loader, val_loader, test_loader, n_epoch, eval
             break
 
     return train_losses, val_losses, max(train_accuracy), max(val_accuracy)
+
+
+def evaluate(model, lengths, test_loader, dtype):
+    accuracy_length = np.zeros(len(lengths))
+    accuracy_class_length = np.zeros(len(lengths))
+    model.eval()
+    with torch.no_grad():
+        for j, length in enumerate(lengths):
+
+            softmax = torch.nn.Softmax(dim=1)
+            predictions = []
+            ground_truths = []
+            for i, d in enumerate(test_loader):
+                x, aux_, y = d
+                logprob = model(x.type(dtype), aux_.type(dtype))
+                predictions.extend(list(np.argmax(softmax(logprob).detach().cpu(), axis=1)))
+                ground_truths.extend(list(y.numpy()))
+
+            predictions = np.array(predictions)
+            ground_truths = np.array(ground_truths)
+
+            accuracy_length[j] = (predictions == ground_truths).mean()
+            accuracy_class_length[j] = np.array(
+                [(predictions[ground_truths == l] == ground_truths[ground_truths == l]).mean()
+                 for l in np.unique(ground_truths)]).mean()
+
+    return accuracy_length, accuracy_class_length
